@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="VN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CÂY ĐÀO TẾT</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000000; font-family: 'Times New Roman', serif; }
+        #canvas-container { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
+        
+        /* UI Overlay - Minimalist */
+        #ui-layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 10; pointer-events: none;
+            display: flex; flex-direction: column; 
+            align-items: center;
+            padding-top: 40px;
+            box-sizing: border-box;
+            /* Remove transition here as we don't hide the whole layer anymore */
+        }
+        
+        /* When hidden class is applied to specific elements */
+        .ui-hidden {
+            opacity: 0;
+            pointer-events: none !important;
+        }
+
+        /* Loading */
+        #loader {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: #000; z-index: 100;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            transition: opacity 0.8s ease-out;
+        }
+        .loader-text {
+            color: #ff6b9d; font-size: 14px; letter-spacing: 4px; margin-top: 20px;
+            text-transform: uppercase; font-weight: 100;
+        }
+        .spinner {
+            width: 40px; height: 40px; border: 1px solid rgba(212, 175, 55, 0.2); 
+            border-top: 1px solid #d4af37; border-radius: 50%; 
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* Typography - Centerpiece */
+        h1 { 
+            color: #ff6b9d; font-size: 56px; margin: 0; font-weight: 400; 
+            letter-spacing: 6px; 
+            text-shadow: 0 0 50px rgba(255, 107, 157, 0.6); 
+            background: linear-gradient(to bottom, #fff, #ff6b9d);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            font-family: 'Cinzel', 'Times New Roman', serif;
+            opacity: 0.9;
+            transition: opacity 0.5s ease; /* Ensure smooth transitions if needed */
+        }
+
+        /* Upload Button - Restored & Elegant */
+        .upload-wrapper {
+            margin-top: 20px;
+            pointer-events: auto;
+            text-align: center;
+            transition: opacity 0.5s ease; /* Add transition for smooth hiding */
+        }
+        .upload-btn {
+            background: rgba(20, 20, 20, 0.6); 
+            border: 1px solid rgba(255, 107, 157, 0.4); 
+            color: #ff6b9d; 
+            padding: 10px 25px; 
+            cursor: pointer; 
+            text-transform: uppercase; 
+            letter-spacing: 3px; 
+            font-size: 10px;
+            transition: all 0.4s;
+            display: inline-block;
+            backdrop-filter: blur(5px);
+        }
+        .upload-btn:hover { 
+            background: #ff6b9d; 
+            color: #fff; 
+            box-shadow: 0 0 20px rgba(255, 107, 157, 0.5);
+        }
+        .hint-text {
+            color: rgba(255, 107, 157, 0.5);
+            font-size: 9px;
+            margin-top: 8px;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        #file-input { display: none; }
+
+        /* Webcam feedback */
+        #webcam-wrapper {
+            position: absolute; bottom: 40px; right: 40px;
+            width: 120px; height: 90px;
+            border: 1px solid rgba(255,255,255,0.1);
+            overflow: hidden; opacity: 0; /* Hidden by default but functional */
+            pointer-events: none;
+        }
+    </style>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&display=swap');
+    </style>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+                "@mediapipe/tasks-vision": "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/+esm"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="loader">
+        <div class="spinner"></div>
+        <div class="loader-text">Đang tải phép màu Tết...</div>
+    </div>
+
+    <div id="canvas-container"></div>
+
+    <div id="ui-layer">
+        <h1></h1>
+        
+        <div class="upload-wrapper">
+            <label class="upload-btn">
+                Thêm ảnh
+                <input type="file" id="file-input" multiple accept="image/*">
+            </label>
+            <div class="hint-text">Nhấn phím 'H' để ẩn các nút điều khiển</div>
+        </div>
+    </div>
+
+    <!-- Webcam hidden structure -->
+    <div id="webcam-wrapper">
+        <video id="webcam" autoplay playsinline style="display:none;"></video>
+        <canvas id="webcam-preview"></canvas>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'; 
+        import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
+
+        // --- CONFIGURATION ---
+        const CONFIG = {
+            colors: {
+                bg: 0x1a0a0a,        // Nền tối ấm
+                peachPink: 0xff6b9d,  // Hồng đào
+                peachRed: 0xff3366,   // Đỏ đào
+                brownBranch: 0x4a2511, // Nâu cành
+                yellowLeaf: 0xffd700,  // Vàng lá non
+                lightPink: 0xffb6c1    // Hồng nhạt
+            },
+            particles: {
+                count: 900,      // Nhiều hoa hơn
+                dustCount: 800,  // Nhiều cánh hoa rơi
+                treeHeight: 28,   // Cao hơn
+                branchSpread: 12  // Cành tỏa rộng
+            },
+            camera: {
+                z: 50 
+            }
+        };
+
+        const STATE = {
+            mode: 'TREE',  // TREE = cây đào, SCATTER = hoa tỏa, FOCUS = phóng to ảnh
+            focusIndex: -1, 
+            focusTarget: null,
+            hand: { detected: false, x: 0, y: 0 },
+            rotation: { x: 0, y: 0 },
+            petalAnimation: 0 // Hiệu ứng cánh hoa rơi
+        };
+
+        let scene, camera, renderer, composer;
+        let mainGroup; 
+        let clock = new THREE.Clock();
+        let particleSystem = []; 
+        let photoMeshGroup = new THREE.Group();
+        let handLandmarker, video, webcamCanvas, webcamCtx;
+        let caneTexture; 
+
+        async function init() {
+            initThree();
+            setupEnvironment(); 
+            setupLights();
+            createTextures();
+            createParticles(); 
+            createDust();     
+            setupPostProcessing();
+            setupEvents();
+            await initMediaPipe();
+            
+            const loader = document.getElementById('loader');
+            loader.style.opacity = 0;
+            setTimeout(() => loader.remove(), 800);
+
+            animate();
+        }
+
+        function initThree() {
+            const container = document.getElementById('canvas-container');
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(CONFIG.colors.bg);
+            // scene.fog = new THREE.FogExp2(CONFIG.colors.bg, 0.008); // Sương mờ nhẹ hơn 
+
+            camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 2, CONFIG.camera.z); 
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: "high-performance" });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.toneMapping = THREE.ReinhardToneMapping; 
+            renderer.toneMappingExposure = 2.2; 
+            container.appendChild(renderer.domElement);
+
+            mainGroup = new THREE.Group();
+            scene.add(mainGroup);
+        }
+
+        function setupEnvironment() {
+            const pmremGenerator = new THREE.PMREMGenerator(renderer);
+            scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+        }
+
+        function setupLights() {
+            const ambient = new THREE.AmbientLight(0xfff5ee, 0.5); // Ánh sáng ấm
+            scene.add(ambient);
+
+            const innerLight = new THREE.PointLight(0xffaa66, 1.5, 25); // Ánh vàng ấm từ gốc cây
+            innerLight.position.set(0, -10, 0);
+            mainGroup.add(innerLight);
+
+            const spotPink = new THREE.SpotLight(0xff88aa, 800); // Ánh hồng cho hoa
+            spotPink.position.set(30, 40, 40);
+            spotPink.angle = 0.6;
+            spotPink.penumbra = 0.6;
+            scene.add(spotPink);
+
+            const spotWarm = new THREE.SpotLight(0xffddaa, 400); // Ánh vàng ấm
+            spotWarm.position.set(-30, 20, -30);
+            scene.add(spotWarm);
+            
+            const fill = new THREE.DirectionalLight(0xffeedd, 0.7);
+            fill.position.set(0, 0, 50);
+            scene.add(fill);
+        }
+
+        function setupPostProcessing() {
+            const renderScene = new RenderPass(scene, camera);
+            const bloomPass = new UnrealBloomPass(
+                new THREE.Vector2(window.innerWidth, window.innerHeight),
+                0.6,   // strength (giảm từ 1.5)
+                0.2,   // radius (giảm)
+                0.9    // threshold (cao hơn = ít bloom hơn)
+            );
+            bloomPass.threshold = 0.7; 
+            bloomPass.strength = 0.45; 
+            bloomPass.radius = 0.4;
+
+            composer = new EffectComposer(renderer);
+            composer.addPass(renderScene);
+            composer.addPass(bloomPass);
+        }
+
+        function createTextures() {
+            // Texture cho hoa đào
+            const canvas = document.createElement('canvas');
+            canvas.width = 128; canvas.height = 128;
+            const ctx = canvas.getContext('2d');
+            
+            // Gradient hồng cho cánh hoa
+            const gradient = ctx.createRadialGradient(64, 64, 20, 64, 64, 64);
+            gradient.addColorStop(0, '#ffddee');
+            gradient.addColorStop(0.5, '#ff88aa');
+            gradient.addColorStop(1, '#ff3366');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0,0,128,128);
+            
+            caneTexture = new THREE.CanvasTexture(canvas);
+            caneTexture.wrapS = THREE.RepeatWrapping;
+            caneTexture.wrapT = THREE.RepeatWrapping;
+        }
+
+        class Particle {
+            constructor(mesh, type, isDust = false) {
+                this.mesh = mesh;
+                this.type = type;
+                this.isDust = isDust;
+                
+                this.posTree = new THREE.Vector3();
+                this.posScatter = new THREE.Vector3();
+                this.baseScale = mesh.scale.x; 
+
+                // Individual Spin Speed
+                // Photos spin slower to be readable
+                const speedMult = (type === 'PHOTO') ? 0.3 : 2.0;
+
+                this.spinSpeed = new THREE.Vector3(
+                    (Math.random() - 0.5) * speedMult,
+                    (Math.random() - 0.5) * speedMult,
+                    (Math.random() - 0.5) * speedMult
+                );
+
+                this.calculatePositions();
+            }
+
+            calculatePositions() {
+                // TREE: Cành đào tỏa ra (không còn hình nón)
+                const h = CONFIG.particles.treeHeight;
+                const halfH = h / 2;
+                let t = Math.random(); 
+                t = Math.pow(t, 0.6); // Phân bố đều hơn
+                const y = (t * h) - halfH;
+                
+                // Cành tỏa ra theo dạng cây tự nhiên
+                let rMax = CONFIG.particles.branchSpread * Math.pow(t, 0.3); // Tỏa rộng dần lên cao
+                const angle = Math.random() * Math.PI * 2; // Xoay 360 độ tự nhiên
+                const r = rMax * (0.5 + Math.random() * 0.5); 
+                
+                // Thêm độ lệch ngẫu nhiên cho tự nhiên
+                const offsetY = (Math.random() - 0.5) * 2;
+                this.posTree.set(Math.cos(angle) * r, y + offsetY, Math.sin(angle) * r);
+
+                // SCATTER: 3D Sphere (hoa bay)
+                let rScatter = this.isDust ? (15 + Math.random()*25) : (10 + Math.random()*15);
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos(2 * Math.random() - 1);
+                this.posScatter.set(
+                    rScatter * Math.sin(phi) * Math.cos(theta),
+                    rScatter * Math.sin(phi) * Math.sin(theta),
+                    rScatter * Math.cos(phi)
+                );
+            }
+
+            update(dt, mode, focusTargetMesh) {
+                let target = this.posTree;
+                
+                if (mode === 'SCATTER') target = this.posScatter;
+                else if (mode === 'FOCUS') {
+                    if (this.mesh === focusTargetMesh) {
+                        const desiredWorldPos = new THREE.Vector3(0, 2, 35);
+                        const invMatrix = new THREE.Matrix4().copy(mainGroup.matrixWorld).invert();
+                        target = desiredWorldPos.applyMatrix4(invMatrix);
+                    } else {
+                        target = this.posScatter;
+                    }
+                }
+
+                // Movement Easing
+                const lerpSpeed = (mode === 'FOCUS' && this.mesh === focusTargetMesh) ? 5.0 : 2.0; 
+                this.mesh.position.lerp(target, lerpSpeed * dt);
+
+                // Rotation Logic - CRITICAL: Ensure spin happens in Scatter
+                if (mode === 'SCATTER') {
+                    this.mesh.rotation.x += this.spinSpeed.x * dt;
+                    this.mesh.rotation.y += this.spinSpeed.y * dt;
+                    this.mesh.rotation.z += this.spinSpeed.z * dt; // Added Z for more natural tumble
+                } else if (mode === 'TREE') {
+                    // Reset rotations slowly
+                    this.mesh.rotation.x = THREE.MathUtils.lerp(this.mesh.rotation.x, 0, dt);
+                    this.mesh.rotation.z = THREE.MathUtils.lerp(this.mesh.rotation.z, 0, dt);
+                    this.mesh.rotation.y += 0.5 * dt; 
+                }
+                
+                if (mode === 'FOCUS' && this.mesh === focusTargetMesh) {
+                    this.mesh.lookAt(camera.position); 
+                }
+
+                // Scale Logic - Cánh hoa rơi nhấp nháy
+                let s = this.baseScale;
+                if (this.isDust) {
+                    s = this.baseScale * (0.8 + 0.4 * Math.sin(clock.elapsedTime * 3 + this.mesh.id));
+                    if (mode === 'TREE') s = this.baseScale * 0.3; // Vẫn hiển thị nhẹ trên cây
+                } else if (mode === 'SCATTER' && this.type === 'PHOTO') {
+                    // Large preview size in scatter
+                    s = this.baseScale * 2.5; 
+                } else if (mode === 'FOCUS') {
+                    if (this.mesh === focusTargetMesh) s = 4.5; 
+                    else s = this.baseScale * 0.8; 
+                }
+                
+                this.mesh.scale.lerp(new THREE.Vector3(s,s,s), 4*dt);
+            }
+        }
+
+        // --- CREATION ---
+        function createParticles() {
+            // Geometry cho hoa đào
+            const petalGeo = new THREE.CircleGeometry(0.4, 5); // Hình 5 cánh
+            const budGeo = new THREE.SphereGeometry(0.3, 16, 16); // Nụ hoa
+            const leafGeo = new THREE.PlaneGeometry(0.4, 0.6); // Lá
+            
+            // Materials
+            const peachPinkMat = new THREE.MeshStandardMaterial({
+                color: CONFIG.colors.peachPink,
+                metalness: 0.1, roughness: 0.6,
+                emissive: CONFIG.colors.peachPink,
+                emissiveIntensity: 0.3,
+                side: THREE.DoubleSide,
+                transparent: true,
+                opacity: 0.9
+            });
+
+            const peachRedMat = new THREE.MeshStandardMaterial({
+                color: CONFIG.colors.peachRed,
+                metalness: 0.2, roughness: 0.5,
+                emissive: CONFIG.colors.peachRed,
+                emissiveIntensity: 0.4,
+                side: THREE.DoubleSide,
+                transparent: true,
+                opacity: 0.85
+            });
+
+            const lightPinkMat = new THREE.MeshStandardMaterial({
+                color: CONFIG.colors.lightPink,
+                metalness: 0.1, roughness: 0.7,
+                emissive: CONFIG.colors.lightPink,
+                emissiveIntensity: 0.2,
+                side: THREE.DoubleSide,
+                transparent: true,
+                opacity: 0.95
+            });
+            
+            const leafMat = new THREE.MeshStandardMaterial({ 
+                color: CONFIG.colors.yellowLeaf,
+                metalness: 0.3, roughness: 0.6,
+                side: THREE.DoubleSide
+            });
+
+            for (let i = 0; i < CONFIG.particles.count; i++) {
+                const rand = Math.random();
+                let mesh, type;
+                
+                if (rand < 0.50) {
+                    // Hoa đào hồng nhạt (50%)
+                    mesh = new THREE.Mesh(petalGeo, lightPinkMat);
+                    type = 'PETAL_LIGHT';
+                } else if (rand < 0.80) {
+                    // Hoa đào hồng đậm (30%)
+                    mesh = new THREE.Mesh(petalGeo, peachPinkMat);
+                    type = 'PETAL_PINK';
+                } else if (rand < 0.93) {
+                    // Hoa đào đỏ (13%)
+                    mesh = new THREE.Mesh(petalGeo, peachRedMat);
+                    type = 'PETAL_RED';
+                } else if (rand < 0.97) {
+                    // Nụ hoa (4%)
+                    mesh = new THREE.Mesh(budGeo, peachRedMat);
+                    type = 'BUD';
+                } else {
+                    // Lá non (3%)
+                    mesh = new THREE.Mesh(leafGeo, leafMat);
+                    type = 'LEAF';
+                }
+
+                const s = 0.5 + Math.random() * 0.6;
+                mesh.scale.set(s,s,s);
+                mesh.rotation.set(Math.random()*6, Math.random()*6, Math.random()*6);
+                
+                mainGroup.add(mesh);
+                particleSystem.push(new Particle(mesh, type, false));
+            }
+
+            // Không có ngôi sao - thay bằng cụm hoa đỉnh cây
+            const topFlowerGroup = new THREE.Group();
+            for(let i=0; i<8; i++) {
+                const flower = new THREE.Mesh(petalGeo, peachRedMat);
+                const angle = (i/8) * Math.PI * 2;
+                flower.position.set(Math.cos(angle)*0.5, 0, Math.sin(angle)*0.5);
+                flower.scale.setScalar(0.8);
+                topFlowerGroup.add(flower);
+            }
+            topFlowerGroup.position.set(0, CONFIG.particles.treeHeight/2 + 1, 0);
+            mainGroup.add(topFlowerGroup);
+            
+            mainGroup.add(photoMeshGroup);
+        }
+
+        function createDust() {
+            // Cánh hoa rơi - nhỏ hơn và mềm mại hơn
+            const petalGeo = new THREE.CircleGeometry(0.15, 5);
+            const colors = [0xffccdd, 0xff99bb, 0xffaacc, 0xffddee];
+            
+            for(let i=0; i<CONFIG.particles.dustCount; i++) {
+                 const color = colors[Math.floor(Math.random() * colors.length)];
+                 const mat = new THREE.MeshBasicMaterial({ 
+                     color: color, 
+                     transparent: true, 
+                     opacity: 0.7,
+                     side: THREE.DoubleSide 
+                 });
+                 const mesh = new THREE.Mesh(petalGeo, mat);
+                 mesh.scale.setScalar(0.4 + Math.random() * 0.6);
+                 mainGroup.add(mesh);
+                 particleSystem.push(new Particle(mesh, 'PETAL_DUST', true));
+            }
+        }
+        function addPhotoToScene(texture) {
+            const frameGeo = new THREE.BoxGeometry(1.4, 1.4, 0.05);
+            const frameMat = new THREE.MeshStandardMaterial({ color: 0xcc8844, metalness: 0.8, roughness: 0.3 }); // Khung gỗ nâu
+            const frame = new THREE.Mesh(frameGeo, frameMat);
+
+            const photoGeo = new THREE.PlaneGeometry(1.2, 1.2);
+            const photoMat = new THREE.MeshBasicMaterial({ map: texture });
+            const photo = new THREE.Mesh(photoGeo, photoMat);
+            photo.position.z = 0.04;
+
+            const group = new THREE.Group();
+            group.add(frame);
+            group.add(photo);
+            
+            const s = 0.8;
+            group.scale.set(s,s,s);
+            
+            photoMeshGroup.add(group);
+            particleSystem.push(new Particle(group, 'PHOTO', false));
+        }
+        
+        function handleImageUpload(e) {
+            const files = e.target.files;
+            if(!files.length) return;
+            Array.from(files).forEach(f => {
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    new THREE.TextureLoader().load(ev.target.result, (t) => {
+                        t.colorSpace = THREE.SRGBColorSpace;
+                        addPhotoToScene(t);
+                    });
+                }
+                reader.readAsDataURL(f);
+            });
+        }
+
+        // --- MEDIAPIPE ---
+        async function initMediaPipe() {
+            video = document.getElementById('webcam');
+            webcamCanvas = document.getElementById('webcam-preview');
+            webcamCtx = webcamCanvas.getContext('2d');
+            webcamCanvas.width = 160; webcamCanvas.height = 120;
+
+            const vision = await FilesetResolver.forVisionTasks(
+                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
+            );
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
+                    delegate: "GPU"
+                },
+                runningMode: "VIDEO",
+                numHands: 1
+            });
+            
+            if (navigator.mediaDevices?.getUserMedia) {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", predictWebcam);
+            }
+        }
+
+        let lastVideoTime = -1;
+        let lastDetectTime = 0;
+        async function predictWebcam() {
+            const now = performance.now();
+
+            if (video.currentTime !== lastVideoTime && now - lastDetectTime > 80) { 
+                lastVideoTime = video.currentTime;
+                lastDetectTime = now;
+
+                if (handLandmarker) {
+                    const result = handLandmarker.detectForVideo(video, now);
+                    processGestures(result);
+                }
+            }
+            requestAnimationFrame(predictWebcam);
+        }
+
+        function processGestures(result) {
+            if (result.landmarks && result.landmarks.length > 0) {
+                STATE.hand.detected = true;
+                const lm = result.landmarks[0];
+                STATE.hand.x = (lm[9].x - 0.5) * 2; 
+                STATE.hand.y = (lm[9].y - 0.5) * 2;
+
+                const thumb = lm[4]; const index = lm[8]; const wrist = lm[0];
+                const pinchDist = Math.hypot(thumb.x - index.x, thumb.y - index.y);
+                const tips = [lm[8], lm[12], lm[16], lm[20]];
+                let avgDist = 0;
+                tips.forEach(t => avgDist += Math.hypot(t.x - wrist.x, t.y - wrist.y));
+                avgDist /= 4;
+
+                if (pinchDist < 0.05) {
+                    if (STATE.mode !== 'FOCUS') {
+                        STATE.mode = 'FOCUS';
+                        const photos = particleSystem.filter(p => p.type === 'PHOTO');
+                        if (photos.length) STATE.focusTarget = photos[Math.floor(Math.random()*photos.length)].mesh;
+                    }
+                } else if (avgDist < 0.25) {
+                    STATE.mode = 'TREE';
+                    STATE.focusTarget = null;
+                } else if (avgDist > 0.4) {
+                    STATE.mode = 'SCATTER';
+                    STATE.focusTarget = null;
+                }
+            } else {
+                STATE.hand.detected = false;
+            }
+        }
+
+        function setupEvents() {
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                composer.setSize(window.innerWidth, window.innerHeight);
+            });
+            document.getElementById('file-input').addEventListener('change', handleImageUpload);
+            
+            // Toggle UI logic - ONLY hide controls, keep title
+            window.addEventListener('keydown', (e) => {
+                if (e.key.toLowerCase() === 'h') {
+                    const controls = document.querySelector('.upload-wrapper');
+                    if (controls) controls.classList.toggle('ui-hidden');
+                }
+            });
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const dt = clock.getDelta();
+
+            // Rotation Logic
+            if (STATE.mode === 'SCATTER' && STATE.hand.detected) {
+                const targetRotY = STATE.hand.x * Math.PI * 0.9; 
+                const targetRotX = STATE.hand.y * Math.PI * 0.25;
+                STATE.rotation.y += (targetRotY - STATE.rotation.y) * 3.0 * dt;
+                STATE.rotation.x += (targetRotX - STATE.rotation.x) * 3.0 * dt;
+            } else {
+                if(STATE.mode === 'TREE') {
+                    STATE.rotation.y += 0.3 * dt;
+                    STATE.rotation.x += (0 - STATE.rotation.x) * 2.0 * dt;
+                } else {
+                     STATE.rotation.y += 0.1 * dt; 
+                }
+            }
+
+            mainGroup.rotation.y = STATE.rotation.y;
+            mainGroup.rotation.x = STATE.rotation.x;
+
+            particleSystem.forEach(p => p.update(dt, STATE.mode, STATE.focusTarget));
+            composer.render();
+        }
+
+        init();
+    </script>
+</body>
+</html>
